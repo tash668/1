@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iCloud Drive Style Storage</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f5f5f7;
+        }
+        /* Apple風のグラスモルフィズム（半透明）エフェクト */
+        .blur-nav {
+            background-color: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+    </style>
+</head>
+<body class="text-gray-900 antialiased">
+
+<div id="app" class="min-h-screen flex flex-col" v-cloak>
+    
+    <header class="blur-nav sticky top-0 z-40 border-b border-gray-200/80 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center space-x-4">
+            <button 
+                @click="goBack" 
+                :disabled="currentPath.length === 0"
+                class="p-2 rounded-lg hover:bg-gray-200/50 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                title="戻る"
+            >
+                <i data-lucide="chevron-left" class="w-6 h-6"></i>
+            </button>
+            
+            <div class="flex items-center space-x-2 text-sm font-medium">
+                <span class="text-gray-400 hover:text-gray-600 cursor-pointer" @click="navigateToIndex(-1)">iCloud Drive</span>
+                <template v-for="(folder, index) in currentPath" :key="index">
+                    <span class="text-gray-300">/</span>
+                    <span class="text-gray-500 hover:text-gray-800 cursor-pointer" @click="navigateToIndex(index)">{{ folder }}</span>
+                </template>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-3">
+            <label class="flex items-center space-x-2 bg-[#0071e3] hover:bg-[#0077ed] text-white px-4 py-2 rounded-full text-sm font-medium shadow-sm cursor-pointer transition-all active:scale-95">
+                <i data-lucide="upload-cloud" class="w-4 h-4"></i>
+                <span>ファイルをアップロード</span>
+                <input type="file" class="hidden" @change="handleFileUpload" :disabled="uploading">
+            </label>
+        </div>
+    </header>
+
+    <main class="flex-1 p-8 max-w-7xl w-full mx-auto">
+        
+        <div v-if="loading" class="flex flex-col items-center justify-center py-20">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-[#0071e3]"></div>
+            <p class="text-sm text-gray-400 mt-4">読み込み中...</p>
+        </div>
+
+        <div v-else-if="items.length === 0" class="flex flex-col items-center justify-center py-32 border-2 border-dashed border-gray-200 rounded-2xl bg-white/50">
+            <i data-lucide="folder-open" class="w-16 h-16 text-gray-300 mb-4"></i>
+            <p class="text-gray-500 font-medium">このフォルダは空です</p>
+            <p class="text-xs text-gray-400 mt-1">上のボタンからファイルをアップロードしてください</p>
+        </div>
+
+        <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+            <div 
+                v-for="item in items" 
+                :key="item.id || item.name"
+                class="group relative bg-white border border-gray-100 rounded-2xl p-4 flex flex-col items-center justify-between transition-all duration-200 hover:shadow-xl hover:shadow-gray-200/50 hover:-translate-y-0.5"
+            >
+                <div class="w-full flex-1 flex flex-col items-center justify-center cursor-pointer" @click="item.metadata ? openPreview(item) : enterFolder(item.name)">
+                    
+                    <div class="w-20 h-20 flex items-center justify-center mb-3 relative overflow-hidden rounded-lg">
+                        <template v-if="item.metadata">
+                            <img v-if="isImage(item.name)" :src="getPublicUrl(item.name)" class="w-full h-full object-cover rounded-lg shadow-sm" alt="">
+                            <i v-else-if="isPdf(item.name)" data-lucide="file-text" class="w-14 h-14 text-red-500"></i>
+                            <i v-else data-lucide="file" class="w-14 h-14 text-gray-400"></i>
+                        </template>
+                        <template v-else>
+                            <i data-lucide="folder" class="w-16 h-16 text-blue-400 fill-blue-400/10"></i>
+                        </template>
+                    </div>
+
+                    <p class="text-sm font-medium text-center text-gray-700 w-full truncate px-2" :title="item.name">
+                        {{ item.name }}
+                    </p>
+                    
+                    <p class="text-xs text-gray-400 mt-1">
+                        {{ item.metadata ? formatBytes(item.metadata.size) : 'フォルダ' }}
+                    </p>
+                </div>
+
+                <div class="absolute top-2 right-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 backdrop-blur-sm p-1 rounded-lg shadow-sm">
+                    <button v-if="!item.metadata" @click.stop="enterFolder(item.name)" class="p-1.5 text-blue-600 hover:bg-gray-100 rounded-md" title="開く">
+                        <i data-lucide="folder-input" class="w-4 h-4"></i>
+                    </button>
+                    <button v-if="item.metadata" @click.stop="downloadFile(item.name)" class="p-1.5 text-gray-600 hover:bg-gray-100 rounded-md" title="ダウンロード">
+                        <i data-lucide="download" class="w-4 h-4"></i>
+                    </button>
+                    <button @click.stop="deleteItem(item)" class="p-1.5 text-red-500 hover:bg-red-50 rounded-md" title="削除">
+                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div v-if="previewItem" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-md" @click.self="closePreview">
+        <div class="bg-white rounded-3xl max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                <div class="flex items-center space-x-3 truncate">
+                    <i :data-lucide="isImage(previewItem.name) ? 'image' : 'file-text'" class="w-5 h-5 text-gray-500 flex-shrink-0"></i>
+                    <h3 class="font-semibold text-gray-800 truncate">{{ previewItem.name }}</h3>
+                </div>
+                <button @click="closePreview" class="p-1.5 rounded-full hover:bg-gray-200 text-gray-500 transition-colors">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="flex-1 overflow-auto p-6 bg-gray-100 flex items-center justify-center min-h-[300px]">
+                <img v-if="isImage(previewItem.name)" :src="getPublicUrl(previewItem.name)" class="max-w-full max-h-[50vh] object-contain rounded-lg shadow-sm" alt="">
+                
+                <iframe v-else-if="isPdf(previewItem.name)" :src="getPublicUrl(previewItem.name)" class="w-full h-[50vh] border-0 rounded-lg shadow-sm"></iframe>
+                
+                <div v-else class="text-center p-8 bg-white rounded-2xl shadow-sm max-w-sm">
+                    <i data-lucide="file-warning" class="w-12 h-12 text-gray-400 mx-auto mb-3"></i>
+                    <p class="text-sm font-medium text-gray-600">このファイルのプレビューは利用できません</p>
+                    <p class="text-xs text-gray-400 mt-1">下のボタンからダウンロードしてご確認ください。</p>
+                </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-100 flex justify-end space-x-3 bg-gray-50">
+                <span class="text-xs text-gray-400 self-center mr-auto">サイズ: {{ formatBytes(previewItem.metadata.size) }}</span>
+                <button @click="downloadFile(previewItem.name)" class="flex items-center space-x-2 bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-full text-sm font-medium transition-colors">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                    <span>ダウンロード</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+    // --- 【重要】Supabaseの設定を入力してください ---
+        const SUPABASE_URL =`https://mlqggtjedrynszbgwdtb.supabase.co`;
+        //'https://mlqggtjedrynszbgwdtb.supabase.co'; // Project URL
+        const SUPABASE_ANON_KEY =`eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1scWdndGplZHJ5bnN6Ymd3ZHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMjU1NzIsImV4cCI6MjA5NTkwMTU3Mn0.wYNaYV551xcWHLFUa0xLzO_io35zm0xVeNOpwJ_R50E`;
+            //'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1scWdndGplZHJ5bnN6Ymd3ZHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMjU1NzIsImV4cCI6MjA5NTkwMTU3Mn0.wYNaYV551xcWHLFUa0xLzO_io35zm0xVeNOpwJ_R50E';                 // anon public キー
+        const BUCKET_NAME =`tash01`; //'tash01';    
+
+    const supabase = genKeyUrlValid(SUPABASE_URL, SUPABASE_ANON_KEY) ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+    function genKeyUrlValid(url, key) {
+        return url && key && !url.includes('YOUR_') && !key.includes('YOUR_');
+    }
+
+    const { createApp, ref, onMounted, nextTick } = Vue;
+
+    createApp({
+        setup() {
+            const items = ref([]);
+            const currentPath = ref([]); // 例: ['folder1', 'subfolder2']
+            const loading = ref(false);
+            const uploading = ref(false);
+            const previewItem = ref(null);
+
+            // アイコンの再レンダリング用ヘルパー
+            const refreshIcons = () => {
+                nextTick(() => { if (typeof lucide !== 'undefined') lucide.createIcons(); });
+            };
+
+            // パス文字列の構築
+            const getPathString = (fileName = '') => {
+                const pathParts = [...currentPath.value];
+                if (fileName) pathParts.push(fileName);
+                return pathParts.join('/');
+            };
+
+            // ファイル＆フォルダ一覧の取得
+            const fetchItems = async () => {
+                if (!supabase) {
+                    alert("SupabaseのURLとANON_KEYを設定してください。");
+                    return;
+                }
+                loading.value = true;
+                try {
+                    const prefix = getPathString();
+                    const { data, error } = await supabase.storage
+                        .from(BUCKET_NAME)
+                        .list(prefix ? prefix : '', {
+                            limit: 100,
+                            offset: 0,
+                            sortBy: { column: 'name', order: 'asc' }
+                        });
+
+                    if (error) throw error;
+                    
+                    // .emptyKeepFile などのSupabase自動生成の隠しファイルを除外
+                    items.value = data.filter(item => item.name !== '.emptyKeepFile');
+                } catch (error) {
+                    console.error('エラー:', error.message);
+                    alert('データの取得に失敗しました: ' + error.message);
+                } finally {
+                    loading.value = false;
+                    refreshIcons();
+                }
+            };
+
+            // フォルダに入る
+            const enterFolder = (folderName) => {
+                currentPath.value.push(folderName);
+                fetchItems();
+            };
+
+            // 戻るボタン
+            const goBack = () => {
+                if (currentPath.value.length > 0) {
+                    currentPath.value.pop();
+                    fetchItems();
+                }
+            };
+
+            // パンくずリストクリックでの移動
+            const navigateToIndex = (index) => {
+                currentPath.value = currentPath.value.slice(0, index + 1);
+                fetchItems();
+            };
+
+            // パブリックURLの取得（プレビュー、ダウンロード用）
+            const getPublicUrl = (fileName) => {
+                const fullPath = getPathString(fileName);
+                const { data } = supabase.storage.from(BUCKET_NAME).getPublicUrl(fullPath);
+                return data.publicUrl;
+            };
+
+            // ファイルアップロード
+            const handleFileUpload = async (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                uploading.value = true;
+                const fullPath = getPathString(file.name);
+
+                try {
+                    const { error } = await supabase.storage
+                        .from(BUCKET_NAME)
+                        .upload(fullPath, file, { upsert: true });
+
+                    if (error) throw error;
+                    alert('アップロードが完了しました');
+                    fetchItems();
+                } catch (error) {
+                    console.error(error);
+                    alert('アップロード失敗: ' + error.message);
+                } finally {
+                    uploading.value = false;
+                    event.target.value = ''; // inputクリア
+                }
+            };
+
+            // ファイルダウンロード
+            const downloadFile = async (fileName) => {
+                try {
+                    const fullPath = getPathString(fileName);
+                    const { data, error } = await supabase.storage.from(BUCKET_NAME).download(fullPath);
+                    if (error) throw error;
+
+                    // ブラウザのダウンロードを発火
+                    const url = window.URL.createObjectURL(data);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = fileName;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    a.remove();
+                } catch (error) {
+                    alert('ダウンロードに失敗しました: ' + error.message);
+                }
+            };
+
+            // アイテム削除 (ファイル・フォルダ両対応)
+            const deleteItem = async (item) => {
+                if (!confirm(`本当に「${item.name}」を削除しますか？`)) return;
+
+                try {
+                    const fullPath = getPathString(item.name);
+
+                    if (item.metadata) {
+                        // ファイルの削除
+                        const { error } = await supabase.storage.from(BUCKET_NAME).remove([fullPath]);
+                        if (error) throw error;
+                    } else {
+                        // ⚠️ Supabase Storageは「空のフォルダ」という概念がない、またはフォルダごと削除APIがないため、
+                        // フォルダ内のファイルを再帰的に削除する必要があります。今回は簡易的に警告を表示します。
+                        alert('Supabaseの仕様上、フォルダの削除はフォルダ内のファイルをすべて個別に削除する必要があります。');
+                        return;
+                    }
+
+                    alert('削除しました');
+                    fetchItems();
+                } catch (error) {
+                    alert('削除に失敗しました: ' + error.message);
+                }
+            };
+
+            // プレビュー開閉
+            const openPreview = (item) => {
+                previewItem.value = item;
+                refreshIcons();
+            };
+            const closePreview = () => {
+                previewItem.value = null;
+            };
+
+            // 拡張子チェックユーティリティ
+            const isImage = (name) => /\.(jpg|jpeg|png|webp|avif|gif|svg)$/i.test(name);
+            const isPdf = (name) => /\.pdf$/i.test(name);
+
+            // バイトを読みやすい単位に変換
+            const formatBytes = (bytes, decimals = 2) => {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const dm = decimals < 0 ? 0 : decimals;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+            };
+
+            onMounted(() => {
+                if (genKeyUrlValid(SUPABASE_URL, SUPABASE_ANON_KEY)) {
+                    fetchItems();
+                } else {
+                    // 初期表示用ダミーデータ（動作確認用）
+                    items.value = [
+                        { name: 'Documents', metadata: null },
+                        { name: 'Photos', metadata: null },
+                        { name: 'apple_wallpaper.png', metadata: { size: 2450000 } },
+                        { name: 'project_spec.pdf', metadata: { size: 412000 } }
+                    ];
+                    refreshIcons();
+                }
+            });
+
+            return {
+                items, currentPath, loading, uploading, previewItem,
+                goBack, enterFolder, navigateToIndex, handleFileUpload, downloadFile, deleteItem,
+                openPreview, closePreview, isImage, isPdf, getPublicUrl, formatBytes
+            };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
