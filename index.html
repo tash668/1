@@ -148,10 +148,8 @@
 <script>
     // --- 【重要】Supabaseの設定を入力してください ---
         const SUPABASE_URL =`https://mlqggtjedrynszbgwdtb.supabase.co`;
-        //'https://mlqggtjedrynszbgwdtb.supabase.co'; // Project URL
         const SUPABASE_ANON_KEY =`eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1scWdndGplZHJ5bnN6Ymd3ZHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMjU1NzIsImV4cCI6MjA5NTkwMTU3Mn0.wYNaYV551xcWHLFUa0xLzO_io35zm0xVeNOpwJ_R50E`;
-            //'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1scWdndGplZHJ5bnN6Ymd3ZHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMjU1NzIsImV4cCI6MjA5NTkwMTU3Mn0.wYNaYV551xcWHLFUa0xLzO_io35zm0xVeNOpwJ_R50E';                 // anon public キー
-        const BUCKET_NAME =`tash01`; //'tash01';    
+        const BUCKET_NAME =`tash01`; 
 
     // URLとKEYが初期状態のままでないかチェックする関数
     function checkCredentials(url, key) {
@@ -240,15 +238,22 @@
                 }
                 const file = event.target.files[0];
                 if (!file) return;
-
+            
                 uploading.value = true;
-                const fullPath = getPathString(file.name);
-
+            
+                // 🔥【修正ポイント】ファイル名からスペースをきれいに除去/置換します
+                // 全角スペースと半角スペースをすべてアンダースコア(_)に置き換えます
+                const safeFileName = file.name.replace(/[\s　]+/g, '_');
+                
+                // 綺麗にしたファイル名でパスを構築
+                const fullPath = getPathString(safeFileName);
+            
                 try {
+                    // fileオブジェクトをそのまま渡しますが、storage上の名前はsafeFileNameになります
                     const { error } = await supabaseClient.storage
                         .from(BUCKET_NAME)
                         .upload(fullPath, file, { upsert: true });
-
+            
                     if (error) throw error;
                     alert('アップロードが完了しました');
                     fetchItems();
@@ -261,6 +266,7 @@
                 }
             };
 
+            
             const downloadFile = async (fileName) => {
                 if (!supabaseClient) return;
                 try {
