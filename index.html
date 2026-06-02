@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>iCloud Drive Style Storage</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     
@@ -14,12 +14,13 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background-color: #f5f5f7;
         }
-        /* Apple風のグラスモルフィズム（半透明）エフェクト */
         .blur-nav {
             background-color: rgba(255, 255, 255, 0.7);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
         }
+        /* Vueの読み込み完了前に{{マスタッシュ}}が見えるのを防ぐ */
+        [v-cloak] { display: none; }
     </style>
 </head>
 <body class="text-gray-900 antialiased">
@@ -125,13 +126,10 @@
             
             <div class="flex-1 overflow-auto p-6 bg-gray-100 flex items-center justify-center min-h-[300px]">
                 <img v-if="isImage(previewItem.name)" :src="getPublicUrl(previewItem.name)" class="max-w-full max-h-[50vh] object-contain rounded-lg shadow-sm" alt="">
-                
                 <iframe v-else-if="isPdf(previewItem.name)" :src="getPublicUrl(previewItem.name)" class="w-full h-[50vh] border-0 rounded-lg shadow-sm"></iframe>
-                
-                <div v-else class="text-center p-8 bg-white rounded-2xl shadow-sm max-w-sm">
+                <div class="text-center p-8 bg-white rounded-2xl shadow-sm max-w-sm">
                     <i data-lucide="file-warning" class="w-12 h-12 text-gray-400 mx-auto mb-3"></i>
                     <p class="text-sm font-medium text-gray-600">このファイルのプレビューは利用できません</p>
-                    <p class="text-xs text-gray-400 mt-1">下のボタンからダウンロードしてご確認ください。</p>
                 </div>
             </div>
 
@@ -155,10 +153,16 @@
             //'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1scWdndGplZHJ5bnN6Ymd3ZHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzMjU1NzIsImV4cCI6MjA5NTkwMTU3Mn0.wYNaYV551xcWHLFUa0xLzO_io35zm0xVeNOpwJ_R50E';                 // anon public キー
         const BUCKET_NAME =`tash01`; //'tash01';    
 
-    const supabase = genKeyUrlValid(SUPABASE_URL, SUPABASE_ANON_KEY) ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-
-    function genKeyUrlValid(url, key) {
+    // URLとKEYが初期状態のままでないかチェックする関数
+    function checkCredentials(url, key) {
         return url && key && !url.includes('YOUR_') && !key.includes('YOUR_');
+    }
+
+    // 【修正】二重宣言エラーを防ぐため、クライアント作成ロジックをスマートに整理
+    let supabaseClient = null;
+    const isConfigured = checkCredentials(SUPABASE_URL, SUPABASE_ANON_KEY);
+    if (isConfigured) {
+        supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     }
 
     const { createApp, ref, onMounted, nextTick } = Vue;
@@ -166,33 +170,27 @@
     createApp({
         setup() {
             const items = ref([]);
-            const currentPath = ref([]); // 例: ['folder1', 'subfolder2']
+            const currentPath = ref([]);
             const loading = ref(false);
             const uploading = ref(false);
             const previewItem = ref(null);
 
-            // アイコンの再レンダリング用ヘルパー
             const refreshIcons = () => {
                 nextTick(() => { if (typeof lucide !== 'undefined') lucide.createIcons(); });
             };
 
-            // パス文字列の構築
             const getPathString = (fileName = '') => {
                 const pathParts = [...currentPath.value];
                 if (fileName) pathParts.push(fileName);
                 return pathParts.join('/');
             };
 
-            // ファイル＆フォルダ一覧の取得
             const fetchItems = async () => {
-                if (!supabase) {
-                    alert("SupabaseのURLとANON_KEYを設定してください。");
-                    return;
-                }
+                if (!supabaseClient) return;
                 loading.value = true;
                 try {
                     const prefix = getPathString();
-                    const { data, error } = await supabase.storage
+                    const { data, error } = await supabaseClient.storage
                         .from(BUCKET_NAME)
                         .list(prefix ? prefix : '', {
                             limit: 100,
@@ -201,11 +199,9 @@
                         });
 
                     if (error) throw error;
-                    
-                    // .emptyKeepFile などのSupabase自動生成の隠しファイルを除外
                     items.value = data.filter(item => item.name !== '.emptyKeepFile');
                 } catch (error) {
-                    console.error('エラー:', error.message);
+                    console.error(error);
                     alert('データの取得に失敗しました: ' + error.message);
                 } finally {
                     loading.value = false;
@@ -213,13 +209,11 @@
                 }
             };
 
-            // フォルダに入る
             const enterFolder = (folderName) => {
                 currentPath.value.push(folderName);
                 fetchItems();
             };
 
-            // 戻るボタン
             const goBack = () => {
                 if (currentPath.value.length > 0) {
                     currentPath.value.pop();
@@ -227,21 +221,23 @@
                 }
             };
 
-            // パンくずリストクリックでの移動
             const navigateToIndex = (index) => {
                 currentPath.value = currentPath.value.slice(0, index + 1);
                 fetchItems();
             };
 
-            // パブリックURLの取得（プレビュー、ダウンロード用）
             const getPublicUrl = (fileName) => {
+                if (!supabaseClient) return '';
                 const fullPath = getPathString(fileName);
-                const { data } = supabase.storage.from(BUCKET_NAME).getPublicUrl(fullPath);
+                const { data } = supabaseClient.storage.from(BUCKET_NAME).getPublicUrl(fullPath);
                 return data.publicUrl;
             };
 
-            // ファイルアップロード
             const handleFileUpload = async (event) => {
+                if (!supabaseClient) {
+                    alert('Supabaseが設定されていないためアップロードできません。');
+                    return;
+                }
                 const file = event.target.files[0];
                 if (!file) return;
 
@@ -249,7 +245,7 @@
                 const fullPath = getPathString(file.name);
 
                 try {
-                    const { error } = await supabase.storage
+                    const { error } = await supabaseClient.storage
                         .from(BUCKET_NAME)
                         .upload(fullPath, file, { upsert: true });
 
@@ -261,18 +257,17 @@
                     alert('アップロード失敗: ' + error.message);
                 } finally {
                     uploading.value = false;
-                    event.target.value = ''; // inputクリア
+                    event.target.value = '';
                 }
             };
 
-            // ファイルダウンロード
             const downloadFile = async (fileName) => {
+                if (!supabaseClient) return;
                 try {
                     const fullPath = getPathString(fileName);
-                    const { data, error } = await supabase.storage.from(BUCKET_NAME).download(fullPath);
+                    const { data, error } = await supabaseClient.storage.from(BUCKET_NAME).download(fullPath);
                     if (error) throw error;
 
-                    // ブラウザのダウンロードを発火
                     const url = window.URL.createObjectURL(data);
                     const a = document.createElement('a');
                     a.href = url;
@@ -286,21 +281,18 @@
                 }
             };
 
-            // アイテム削除 (ファイル・フォルダ両対応)
             const deleteItem = async (item) => {
+                if (!supabaseClient) return;
                 if (!confirm(`本当に「${item.name}」を削除しますか？`)) return;
 
                 try {
                     const fullPath = getPathString(item.name);
 
                     if (item.metadata) {
-                        // ファイルの削除
-                        const { error } = await supabase.storage.from(BUCKET_NAME).remove([fullPath]);
+                        const { error } = await supabaseClient.storage.from(BUCKET_NAME).remove([fullPath]);
                         if (error) throw error;
                     } else {
-                        // ⚠️ Supabase Storageは「空のフォルダ」という概念がない、またはフォルダごと削除APIがないため、
-                        // フォルダ内のファイルを再帰的に削除する必要があります。今回は簡易的に警告を表示します。
-                        alert('Supabaseの仕様上、フォルダの削除はフォルダ内のファイルをすべて個別に削除する必要があります。');
+                        alert('Supabaseの仕様上、内包ファイルを含むフォルダの一括削除は別途実装が必要です。ファイルを個別に削除してください。');
                         return;
                     }
 
@@ -311,7 +303,6 @@
                 }
             };
 
-            // プレビュー開閉
             const openPreview = (item) => {
                 previewItem.value = item;
                 refreshIcons();
@@ -320,11 +311,9 @@
                 previewItem.value = null;
             };
 
-            // 拡張子チェックユーティリティ
             const isImage = (name) => /\.(jpg|jpeg|png|webp|avif|gif|svg)$/i.test(name);
             const isPdf = (name) => /\.pdf$/i.test(name);
 
-            // バイトを読みやすい単位に変換
             const formatBytes = (bytes, decimals = 2) => {
                 if (bytes === 0) return '0 Bytes';
                 const k = 1024;
@@ -335,10 +324,10 @@
             };
 
             onMounted(() => {
-                if (genKeyUrlValid(SUPABASE_URL, SUPABASE_ANON_KEY)) {
+                if (supabaseClient) {
                     fetchItems();
                 } else {
-                    // 初期表示用ダミーデータ（動作確認用）
+                    // クレデンシャル未設定時のプレビュー用ダミーデータ
                     items.value = [
                         { name: 'Documents', metadata: null },
                         { name: 'Photos', metadata: null },
